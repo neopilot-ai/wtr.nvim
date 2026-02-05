@@ -1,3 +1,9 @@
+--- wtr.nvim - Git Worktree Orchestration for Neovim
+-- Provides seamless management of Git worktrees with Telescope integration.
+-- @module wtr
+-- @author neopilot-ai
+-- @license MIT
+
 local Job = require("plenary.job")
 local Path = require("plenary.path")
 local Enum = require("wtr.enum")
@@ -10,6 +16,11 @@ local git_worktree_root = nil
 local current_worktree_path = nil
 local on_change_callbacks = {}
 
+--- Initialize git repository information.
+-- Discovers and caches Git repository information including root directory
+-- and current worktree path. Called automatically before operations.
+--
+-- @usage require('wtr').setup_git_info()
 M.setup_git_info = function()
     local cwd = vim.loop.cwd()
 
@@ -157,7 +168,7 @@ local function change_dirs(path)
         vim.cmd(cmd)
         current_worktree_path = worktree_path
     else
-        status:error('Could not chang to directory: ' ..worktree_path)
+        status:error('Could not change to directory: ' .. worktree_path)
     end
 
     if M._config.clearjumps_on_change then
@@ -235,20 +246,31 @@ local function has_worktree(path, cb)
     job:start()
 end
 
+--- Create a failure handler for Job operations.
+-- Generates a failure callback that logs and displays formatted error messages.
+--
+-- @param from string operation name that failed (e.g., "create_worktree")
+-- @param cmd table|string command being executed
+-- @param path string worktree path involved in the operation
+-- @param soft_error boolean|nil if true, error is logged but doesn't halt; defaults to false
+-- @return function failure callback
 local function failure(from, cmd, path, soft_error)
     return function(e)
+        local cmd_str = type(cmd) == "string" and cmd or vim.inspect(cmd)
+        local stderr_output = table.concat(e:stderr_result() or {}, "\n")
         local error_message = string.format(
-            "%s Failed: PATH %s CMD %s RES %s, ERR %s",
+            "%s: Operation failed.\n  Path: %s\n  Command: %s\n  Error: %s",
             from,
-            path,
-            vim.inspect(cmd),
-            vim.inspect(e:result()),
-            vim.inspect(e:stderr_result()))
+            tostring(path) or "unknown",
+            cmd_str,
+            stderr_output ~= "" and stderr_output or "(no error details available)")
 
         if soft_error then
             status:status(error_message)
+            status:log().warn(error_message)
         else
             status:error(error_message)
+            status:log().error(error_message)
         end
     end
 end
@@ -384,6 +406,15 @@ local function create_worktree(path, branch, upstream, found_branch)
     create:start()
 end
 
+--- Create a new Git worktree.
+-- Creates a new worktree for the specified branch at the given path.
+-- If the branch doesn't exist, it will be created. Automatically sets up
+-- upstream tracking and performs initial rebase if configured.
+--
+-- @param path string path/to/worktree - relative to git root or absolute
+-- @param branch string branch name to create worktree for
+-- @param upstream string|nil upstream remote (defaults to 'origin' if available)
+-- @usage require('wtr').create_worktree('feature', 'feature-x', 'origin')
 M.create_worktree = function(path, branch, upstream)
     status:reset(8)
 
@@ -407,6 +438,12 @@ M.create_worktree = function(path, branch, upstream)
 
 end
 
+--- Switch to a different Git worktree.
+-- Changes the current working directory to the specified worktree.
+-- Updates the current buffer if possible, and triggers on_change callbacks.
+--
+-- @param path string path to worktree - relative or absolute
+-- @usage require('wtr').switch_worktree('feature')
 M.switch_worktree = function(path)
     status:reset(2)
     M.setup_git_info()
@@ -424,6 +461,15 @@ M.switch_worktree = function(path)
     end)
 end
 
+--- Delete an existing Git worktree.
+-- Removes a worktree from the repository. Can force removal if necessary.
+--
+-- @param path string path to worktree - relative or absolute
+-- @param force boolean|nil force removal (--force flag), defaults to false
+-- @param opts table|nil options table with callbacks
+-- @param opts.on_success function|nil callback on successful deletion
+-- @param opts.on_failure function|nil callback on deletion failure, receives error object
+-- @usage require('wtr').delete_worktree('feature', false, { on_success = function() print("Done!") end })
 M.delete_worktree = function(path, force, opts)
     if not opts then
         opts = {}
@@ -465,14 +511,31 @@ M.delete_worktree = function(path, force, opts)
     end)
 end
 
+--- Set the Git worktree root directory.
+-- Manually set the root directory for Git worktrees.
+--
+-- @param wd string path to worktree root directory
+-- @usage require('wtr').set_worktree_root('/path/to/repo')
 M.set_worktree_root = function(wd)
     git_worktree_root = wd
 end
 
+--- Set the current worktree path.
+-- Manually set the path of the current active worktree.
+--
+-- @param wd string path to current worktree
+-- @usage require('wtr').set_current_worktree_path('/path/to/current')
 M.set_current_worktree_path = function(wd)
     current_worktree_path = wd
 end
 
+--- Update current buffer when switching worktrees.
+-- Intelligently updates the current buffer to match the file in the new worktree.
+-- Attempts to find the same relative path in the new worktree and switch to it.
+--
+-- @param prev_path string|nil previous worktree path
+-- @return boolean true if buffer was successfully updated, false otherwise
+-- @usage local updated = require('wtr').update_current_buffer(prev_path)
 M.update_current_buffer = function(prev_path)
     if prev_path == nil then
         return false
@@ -508,22 +571,52 @@ M.update_current_buffer = function(prev_path)
     return true
 end
 
+--- Register a callback for worktree change events.
+-- Callbacks are called with operation type and metadata when worktrees are
+-- created, switched, or deleted.
+--
+-- @param cb function callback function(operation, metadata) called on changes
+--   - operation: string "create", "switch", or "delete"
+--   - metadata: table with operation-specific data (path, branch, upstream, prev_path)
+-- @return nil
+-- @usage require('wtr').on_tree_change(function(op, meta) print(op, meta.path) end)
 M.on_tree_change = function(cb)
     table.insert(on_change_callbacks, cb)
 end
 
+--- Reset all registered callbacks.
+-- Clears all previously registered on_tree_change callbacks.
+--
+-- @usage require('wtr').reset()
 M.reset = function()
     on_change_callbacks = {}
 end
 
+--- Get the Git worktree root directory.
+-- Returns the root directory of the Git repository containing worktrees.
+--
+-- @return string|nil root directory path, or nil if not in a worktree
+-- @usage local root = require('wtr').get_root()
 M.get_root = function()
     return git_worktree_root
 end
 
+--- Get the current worktree path.
+-- Returns the path to the currently active worktree.
+--
+-- @return string|nil current worktree path, or nil if not in a worktree
+-- @usage local current = require('wtr').get_current_worktree_path()
 M.get_current_worktree_path = function()
     return current_worktree_path
 end
 
+--- Convert a worktree path to absolute.
+-- Takes a relative or absolute path and returns the absolute path.
+-- Relative paths are resolved relative to the git worktree root.
+--
+-- @param path string relative or absolute worktree path
+-- @return string absolute path to worktree
+-- @usage local abs_path = require('wtr').get_worktree_path('feature')
 M.get_worktree_path = function(path)
     if Path:new(path):is_absolute() then
         return path
@@ -532,6 +625,18 @@ M.get_worktree_path = function(path)
     end
 end
 
+--- Initialize wtr.nvim with configuration.
+-- Sets up the plugin with the provided configuration options.
+-- Should be called once during Neovim startup.
+--
+-- @param config table|nil configuration options (see README for details)
+--   - change_directory_command: string command to change directory (default: "cd")
+--   - update_on_change: boolean update buffer on worktree switch (default: true)
+--   - update_on_change_command: string fallback command (default: "e .")
+--   - clearjumps_on_change: boolean clear jump list on switch (default: true)
+--   - confirm_telescope_deletions: boolean require deletion confirmation (default: false)
+--   - autopush: boolean auto-push new branches (default: false)
+-- @usage require('wtr').setup({ autopush = true, change_directory_command = 'tcd' })
 M.setup = function(config)
     config = config or {}
     M._config = vim.tbl_deep_extend("force", {
